@@ -226,11 +226,14 @@ function update_weights!(filter_state::BPFState, model::UserDefinedDiscreteObser
         -0.5 * (dy - heval[:,n]*δy)' * Rinv_scaled * (dy - heval[:,n]*δy) for n in 1:N
     ]
 
-    logwaux = logwaux .- maximum(logwaux)
-    w = exp.(logwaux)
+    logw = log.(w) .+ logwaux
+    maxl = maximum(logw)
+    logw .-= maxl
+
+    w = exp.(logw)
 
     ## LogLikelihood estimator  
-    filter_state.logl += log(mean(w)) 
+    filter_state.logl += maxl+log(mean(w)) 
     ## Normalising
     w = w./sum(w)
 

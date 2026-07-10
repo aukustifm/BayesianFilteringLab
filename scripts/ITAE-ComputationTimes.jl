@@ -34,17 +34,17 @@ pde_integration = function(method, lᵢ, l₁, l₂, center₁, center₂, kfsta
     # For fast computation, explicit method Tsit5(), DP8()...
     # For high accuracy yet explicit/fast: Rodas5()
     # For high accuracy: Trapezoid()
-    non_normalised_sol = KF_propagate(u₀, tvec[n], δt, Tsit5(), kfsystem) 
+    non_normalised_sol = KF_propagate(u₀, tvec[n], Δ, Tsit5(), kfsystem) 
     pₜᵟ = non_normalised_sol./quad_trap(non_normalised_sol, center₂, center₁)
 
     # INNOVATION PROCESS (Update step), use Kallianpur–Striebel formula
     if method == "KFE"
       pp[n+1, :, :] = pₜᵟ
     elseif method == "KSE"
-      tedge = round(tvec[n]+δt, digits=3)
+      tedge = round(tvec[n]+Δ, digits=3)
       if (tedge in tᵧvec) 
         ## Likelihood ratio
-        z̃ₜ = dỸₜvec[findall(x -> x == tedge, tᵧvec)][]/δt # since dỸₜvec is the increment of the observation process
+        z̃ₜ = dỸₜvec[findall(x -> x == tedge, tᵧvec)][]/Δ # since dỸₜvec is the increment of the observation process
         innovation = x -> (x .-  z̃ₜ)'*(x .-  z̃ₜ)
         ηₜ = reshape(reduce(vcat, innovation.(h̃ₜ)), l₁, l₂)
         ϕₙᵟ = η -> exp(-0.5*Δ*η)
@@ -225,7 +225,7 @@ end
 
 # the version for filtering:
 function h_filt(x, r, p, t; kwargs...)
-  V, μ_max, Kₛ, Iₛ, γ, σ = p
+  _, _, _, _, μ_max, Kₛ, Iₛ, γ, σ = p
   return (x[2]>0 && x[1]>0) ? γ*[mu_f(x[2], μ_max, Kₛ, Iₛ)*x[1]] .+ r : zeros(1)
 end  
 
@@ -297,7 +297,7 @@ for ns = 1:Ns
   # Filtering
   wᵧ = (σ = 0.01)
   K = diagm([wᵧ*sqrt(Δ/δt)])
-  h_aux = x -> h_filt(x, zeros(1), [pₓ[:V], pₓ[:μ_max], pₓ[:k_s], pₓ[:K], pᵧ[:γ], wᵧ], 0.0)
+  h_aux = x -> h_filt(x, zeros(1), [zeros(3); [pₓ[:V], pₓ[:μ_max], pₓ[:k_s], pₓ[:K], pᵧ[:γ], wᵧ]], 0.0)
   dỸₜvec = inv(K).*dY
 
   # Inputs
@@ -346,9 +346,9 @@ for ns = 1:Ns
     end
 
     kse_history, kse_runtime = pde_integration("KSE", lᵢ, l₁, l₂, center₁, center₂, kfstate, kfsystem, h̃ₜ, dỸₜvec, Δ;verbose=true)
-    
+   
     # Computing the mean estimate 
-    xe =hcat([means_from_joint_trap(kse_history[k, :, :], center₁, center₂) for k in 1:Nₜ]...)
+    xe =hcat([means_from_joint_trap(kse_history[k, :, :]', center₁, center₂) for k in 1:Nₜ]...)
 
     # Computing RMSE and ITAE
     RMSE[ns][lᵢid, :] = (sqrt.(sum((xe-x).^2,dims=1))[:])
@@ -369,7 +369,7 @@ for ns = 1:Ns
   )
   my_filt_params_continuous = FilteringParameters(filt_parameters())
 
-  # Bootstrap particle filter Np=256
+  # Bootstrap particle filter Np=128
   res_method = "Stratified"
   α = 1.0
   Nₚ = 128
@@ -383,7 +383,6 @@ for ns = 1:Ns
 
   # Computing running times (s/Iter)
   runtimes[ns, 5] = output_bpf[4]["clocktime"]/(Nₜ-1)
-
 
   # Bootstrap particle filter Np=1024
   res_method = "Stratified"
@@ -415,20 +414,36 @@ for ns = 1:Ns
   jldsave("./res/20runs_Monod_run$(ns).jld2"; RMSE = RMSE[ns], ITAE=ITAE[ns], runtimes=runtimes[ns,:])
 end
 jldsave("./res/20runs_Monod.jld2"; RMSE = RMSE, ITAE=ITAE, runtimes=runtimes)
+
 #=
+
+xe = hcat([means_from_joint_trap(kfe_history[k, :, :]', center₁, center₂) for k in 1:Nₜ]...)
+Plots.plot!(xe[2,:], label = "lᵢ=128 (KFE)")
+
+Plots.plot(xe[2,:], label = "lᵢ=128")
+Plots.plot!(mm_bpf[2,:], label = "BPF Np=128")
+Plots.plot!(mm_srekf[2,:], label = "EnKF")
+Plots.plot!(x[2,:], label = "Exact")
+=#
+
+#=
+output = load("./res/20runs_Monod.jld2")
+RMSE, ITAE, runtimes = output["RMSE"], output["ITAE"], output["runtimes"]
 using Plots
-Plots.plot([0.0;tᵧvec], ITAE[1][1, :], label = "lᵢ=32", xlabel = "Time (h)", ylabel = "RMSE")
-Plots.plot!([0.0;tᵧvec], ITAE[1][2, :], label = "lᵢ=128", xlabel = "Time (h)", ylabel = "RMSE")
-Plots.plot!([0.0;tᵧvec], ITAE[1][5, :], label = "BPF 128", xlabel = "Time (h)", ylabel = "RMSE")
-Plots.plot!([0.0;tᵧvec], ITAE[1][6, :], label = "BPF 1024", xlabel = "Time (h)", ylabel = "RMSE")
-Plots.plot!([0.0;tᵧvec], ITAE[1][7, :], label = "EnKF", xlabel = "Time (h)", ylabel = "RMSE")
+Plots.plot([tᵧvec], ITAE[ns][1, 2:end],yscale=:log10, label = "lᵢ=32", xlabel = "Time (h)", ylabel = "RMSE")
+Plots.plot!([tᵧvec], ITAE[ns][2, 2:end], label = "lᵢ=128", xlabel = "Time (h)", ylabel = "RMSE")
+Plots.plot!([tᵧvec], ITAE[ns][3, 2:end], label = "lᵢ=256", xlabel = "Time (h)", ylabel = "RMSE")
+Plots.plot!([tᵧvec], ITAE[ns][4, 2:end], label = "lᵢ=512", xlabel = "Time (h)", ylabel = "RMSE")
+Plots.plot!([tᵧvec], ITAE[ns][5, 2:end], label = "BPF 128", xlabel = "Time (h)", ylabel = "RMSE")
+Plots.plot!([tᵧvec], ITAE[ns][6, 2:end], label = "BPF 1024", xlabel = "Time (h)", ylabel = "RMSE")
+Plots.plot!([tᵧvec], ITAE[ns][7, 2:end], label = "EnKF", xlabel = "Time (h)", ylabel = "RMSE")
 =#
 
 #=
 ## Hellinger matrix
 # Choose idx, idx ∈ (1:1601)
 
-idx = 1601
+idx = 401
 
 myN_KFE = kfe_history[idx,:,:]
 myN_KSE = kse_history[idx,:,:]
