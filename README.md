@@ -1,8 +1,8 @@
-# Stochastic State Estimation
+# Bayesian Filtering Lab
 
 This repository provides implementations of **traditional filtering methods** and **sequential Monte Carlo methods (particle filters)** for stochastic dynamical systems, with a particular focus on systems driven by **Brownian motion**.
 
-The framework is designed for **low- and moderate-dimensional state estimation problems** arising in applications such as the control of bioreactors. For filters better suited to high-dimensional problems, we refer the interested reader to the [LocalParticleFlowFilters repository](https://github.com/aukustifm/LocalParticleFlowFilters).
+The framework is designed for **low- and moderate-dimensionals state estimation problems** arising in applications such as the control of bioreactors. For filters better suited to high-dimensional problems, we refer the interested reader to the [LocalParticleFlowFilters](https://github.com/aukustifm/LocalParticleFlowFilters) repository.
 
 Although our examples focus on **biochemical systems**, the algorithms are problem-agnostic and can be applied to general nonlinear state-space models.
 
@@ -104,7 +104,7 @@ scripts/                           # Reproducible numerical experiments
 
 Project.toml                       # Julia package dependencies
 Manifest.toml                      # Julia environment lock file
-init.jl                            # Package initialization
+init.jl                            # Package initialisation
 
 # Requirements
 
