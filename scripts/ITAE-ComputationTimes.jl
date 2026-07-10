@@ -2,7 +2,7 @@ import Pkg
 Pkg.activate(".")
 
 # LIBRARIES ______________________________
-using  Random, LinearAlgebra, DifferentialEquations
+using  Random, LinearAlgebra, DifferentialEquations, Parameters, JLD2, Distributions, ProgressMeter, OrdinaryDiffEqSDIRK, OrdinaryDiffEqRosenbrock
 #, using Plots, DifferentialEquations, Distributions,
 using BayesianFilteringLab
 
@@ -11,7 +11,7 @@ Random.seed!(1234)
 # AUXILIARY FUNCTIONS __________________________________________________________
 makeProgressBar(N, title) = Progress(N, desc=title, dt=0.5, barlen=50, showspeed=true, color=:white);
 
-pde_integration = function(method; verbose=false)
+pde_integration = function(method, lᵢ, l₁, l₂, center₁, center₂, kfstate, kfsystem, h̃ₜ, dỸₜvec, Δ; verbose=false)
   """
   Finite-difference + Splitting-up approximation, PDE integration
   
@@ -89,13 +89,29 @@ end
 
 # EXPERIMENT _____________________________________________________
 
-## DYNAMICS
 
-## WRITE A FUNCTION THAT,
-## given u(t), p(t)=p, w(t) or (wdB)
-## returns a Differential Equation system, with its independent variables 
-## being the Initial value of the states x₀ and the time span for which it needs to be solved.  
+# ----------------------------------------------------------------------------- 
+# Dynamical system 
+# -----------------------------------------------------------------------------
 
+"""
+Construct the dynamical system:
+
+The function defines the system dynamics for a given control input `u(t)`,
+parameter vector `p`, and process noise `w(t)` (or its stochastic differential
+form `w dB`).
+
+Inputs:
+- `x₀`: initial state vector;
+- `tspan`: time interval over which the system is integrated;
+- `u(t)`: control input;
+- `p`: model parameters;
+- `w(t)` (or `w dB`): process noise.
+
+Returns:
+- A `DifferentialEquations.jl` problem (or equivalent) representing the system
+  dynamics, ready to be solved with DifferentialEquations.jl.
+"""
 function f(t; kwargs...)
 
     # Drift 
@@ -128,21 +144,62 @@ function f(t; kwargs...)
   
     return function(x0, tspan, p; kwargs...) SDEProblem(f1, f2, x0, tspan, p; kwargs...) end
   
-end
-  
-## AUXILIARY
+  end
+
+# Growth kinetics
 function mu_f(s, μ_max, Kₛ, Iₛ)
     s==0 ? 0 : μ_max * s / (Kₛ + s + Iₛ*s*s)
 end
 
-#########################################################################
-## OBSERVATION
+# version for filtering:
+function f_filt(t; kwargs...)
 
-## WRITE A FUNCTION THAT,
-## given u(t), p(t), w(t) or (wdB)
-## returns an observation y_k with its independent variable 
-## being the vector of states for the specified time t_k  
+  function f(x, p, t; kwargs...)
+    b, s = x
+    u, b_in, s_in, V, k, mu_max, k_s, K, σ1, σ2 = p
+    F = u
+    D = F/V
+    [    mu_f(s, mu_max, k_s, K) * b + D * (b_in - b);   # db/dt
+    -k * mu_f(s, mu_max, k_s, K) * b + D * (s_in - s);   # ds/dt
+    ]
+  end
 
+  function g(x, p, t; kwargs...)
+    u, b_in, s_in, V, k, mu_max, k_s, K, σ1, σ2 = p
+    w_x = [σ1, σ2]
+    D = length(x)
+    aux = Matrix{Float64}(I, D, D);
+    for i in 1:D
+      aux[i, i] = w_x[i]*x[i]
+    end
+    return aux
+  end
+  return f, g
+end
+
+# ----------------------------------------------------------------------------- 
+# Observation system 
+# -----------------------------------------------------------------------------
+
+"""
+Construct the observation model for the dynamical system.
+
+The function should define the observation equation for a given control input
+`u(t)`, parameter vector `p(t)`, and measurement noise `w(t)`.
+
+The returned function computes the observation `yₖ` at a specified time `tₖ`
+from the corresponding state vector `x(tₖ)`.
+
+Inputs:
+- `x(tₖ)`: state vector at time `tₖ`;
+- `u(tₖ)`: control input at time `tₖ`;
+- `p(tₖ)`: model parameters;
+- `w(tₖ)`: measurement noise.
+
+Returns:
+- `yₖ`: observation vector at time `tₖ`.
+"""
+# the version for simulation:
 function h(t; kwargs...)
     
     function hₕ(x, p, t; kwargs...)
@@ -166,50 +223,29 @@ function h(t; kwargs...)
     return hₕ, kₕ    
 end
 
-Ns = 1 # Number of simulations
+# the version for filtering:
+function h_filt(x, r, p, t; kwargs...)
+  V, μ_max, Kₛ, Iₛ, γ, σ = p
+  return (x[2]>0 && x[1]>0) ? γ*[mu_f(x[2], μ_max, Kₛ, Iₛ)*x[1]] .+ r : zeros(1)
+end  
 
+Ns = 20 # Number of simulations
 
 ####################################
 ########## MONOD ###################
 ####################################
 
-# Biogas, Substrate and Biomass obs
+# Biogas, Substrate and Biomass obs (although we only use the biogas flow rate for filtering)
 
-# Means (initial points)
-μlist = [1.5 10.0;
-        3.0 3.0;
-        0.75  0.75;
-        1.0 6.0;
-        2.0 0.0;
-        6.00 2.0;
-        1.0 1.0]
-# Variance
-Σ = 1e-8*Matrix(I, 2,2);
+# Initial mean and variance
+μ = [1.0, 1.0]
+Σ = 1e-16*Matrix(I, 2,2);
 
 # Parameters
 pₓ = (V = 100., k = 10.,  μ_max = 0.3,  k_s = 10.0, K = 0.0)
 pᵧ = (V = 100., μ_max = 0.3, k_s = 10.0, K = 0.0, γ = 27.5)
 
-
-
-####################################
-########## MONOD ODE ###############
-####################################
-
-#Noise intensities
-
-wₓ = (σ₁ = 0.05,   σ₂ = 0.05)
-wᵧ = (σ₁ = 0.0075, σ₂ = 0.0075, σ₃ = 0.0075)
-
 function flow(t) 1. end
-
-function inputs(t)
-  d = t -> (bᵢₙ = 0., sᵢₙ = 100.)            
-  η = Dict(:u => flow(t), :d => d(t))
-  p = Dict(:pₓ => pₓ, :pᵧ => pᵧ) 
-  w = Dict(:wₓ => wₓ, :wᵧ => wᵧ)                     
-  return  Dict(:η => η, :p => p, :w => w)
-end
 
 T = 500 # (hours)
 # Time step
@@ -219,19 +255,28 @@ T = 500 # (hours)
 
 Nx = 2
 Ny = 3
-# Generate data
 
-Σ = 1e-8*Matrix(I, 2,2);
-initd = MvNormal(ones(2), Σ);
+initd = MvNormal(μ, Σ);
 
 Nₜ = cutoff = 1601; δt = 0.01
 
-Nmethods = 6
+Nmethods = 7 # 4 PDE-based discretisation levels + 2 boostrap PF with different ensemble sizes + 1 EKF
 RMSE = [zeros(Nmethods, Nₜ) for ns in 1:Ns]
 ITAE = [zeros(Nmethods, Nₜ) for ns in 1:Ns]
 runtimes = zeros(Ns,Nmethods)
 
-for ns in 1:Ns
+for ns = 1:Ns
+  
+  # Simulation
+  wₓ = (σ₁ = 0.05,   σ₂ = 0.05)
+  wᵧ = (σ₁ = 0.01, σ₂ = 0.01, σ₃ = 0.01)
+  function inputs(t)
+    d = t -> (bᵢₙ = 0., sᵢₙ = 100.)            
+    η = Dict(:u => flow(t), :d => d(t))
+    p = Dict(:pₓ => pₓ, :pᵧ => pᵧ) 
+    w = Dict(:wₓ => wₓ, :wᵧ => wᵧ)                     
+  return  Dict(:η => η, :p => p, :w => w)
+  end
 
   output = run!(SystemSimulation(f, h, Nx, Ny, inputs, δᵤ, δₓ, δᵧ, initd, T));
   X, Y = output
@@ -240,19 +285,19 @@ for ns in 1:Ns
   Ysde = Dict(:t => Y[:t] , :y => Y[:y])
 
   x = Xsde[:x][1:cutoff, :]'
+  tvec = Xsde[:t][1:cutoff]
+  global tvec
+  
   dY = mapslices(diff,Ysde[:y][:, 1],dims=1)[1:cutoff-1]
   z = dY/δt
   tᵧvec = Ysde[:t][collect(2:1:cutoff)]
   Δ = tᵧvec[2]-tᵧvec[1]
+  global tᵧvec
   
   # Filtering
-  pₓ = (V = 100., k = 10.,  μ_max = 0.3,  Kₛ = 10.0, Iₛ = 0.0)
-  pᵧ = (V = 100., k = 10.,  μ_max = 0.3,  Kₛ = 10.0, Iₛ = 0.0, γ = 27.5)
-
-  # Noise intensities
   wᵧ = (σ = 0.01)
   K = diagm([wᵧ*sqrt(Δ/δt)])
-  h_aux = x -> h(x, zeros(1), vcat(zeros(5), [pₓ[:μ_max], pₓ[:Kₛ], pₓ[:Iₛ], pᵧ[:γ], wᵧ]), 0.0)
+  h_aux = x -> h_filt(x, zeros(1), [pₓ[:V], pₓ[:μ_max], pₓ[:k_s], pₓ[:K], pᵧ[:γ], wᵧ], 0.0)
   dỸₜvec = inv(K).*dY
 
   # Inputs
@@ -264,17 +309,18 @@ for ns in 1:Ns
     return  Dict(:η => η, :p => p, :w => w)
   end
 
-  # Initial condition
-  μ = [1.0, 1.0]
-  Σ =  0.0025*diagm(ones(2))
+  # Initial condition for filtering
+  μ = [1.0, 1.0] # remains the same as the initial condition for simulation
+  Σ =  0.0025*diagm(ones(2)) # uncertainty around the initial condition
 
   lᵢvec = [32, 128, 256, 512]
 
-  for lᵢid = 1:2
+  for lᵢid = 1:4
 
     lᵢ = lᵢvec[lᵢid]
 
     l₁  = lᵢ; l₂ = lᵢ
+
     x₁ = range(.0, stop = 5.0, length = l₁+1)
     x₂ = range(.0, stop = 5.0, length = l₂+1)
     Δx₁ = x₁[2]-x₁[1]
@@ -292,14 +338,14 @@ for ns in 1:Ns
     h̃ₜ = inv(K).*h_aux.(points)
 
     ## KUSHNER-STRATONOVICH EQUATION with Splitting up approximation
-    my_state_model = DiffusionStateModel(dynamics, MvNormal(μ, Σ))
+    my_state_model = DiffusionStateModel(f_filt, MvNormal(μ, Σ))
     kfstate = BayesianFilteringLab.KFState(my_state_model, points)
     μ₁, μ₂, D₁, D₂, D₁₂, D₂₁ = KF_discretise(kfstate, inputs, 0.)
     kfsystem = function(u,p,t)
       KF_assemble(u, μ₁, μ₂, D₁, D₂, D₁₂; Δx₁=Δx₁, Δx₂=Δx₂)
     end
 
-    kse_history, kse_runtime = pde_integration("KSE")
+    kse_history, kse_runtime = pde_integration("KSE", lᵢ, l₁, l₂, center₁, center₂, kfstate, kfsystem, h̃ₜ, dỸₜvec, Δ;verbose=true)
     
     # Computing the mean estimate 
     xe =hcat([means_from_joint_trap(kse_history[k, :, :], center₁, center₂) for k in 1:Nₜ]...)
@@ -312,8 +358,8 @@ for ns in 1:Ns
     runtimes[ns, lᵢid] = (kse_runtime[3]-kse_runtime[1])/(Nₜ-1)
   end
 
-  my_state_model = DiffusionStateModel(dynamics, MvNormal(μ,Σ))
-  my_obs_model   = UserDefinedDiscreteObservationModel(h)
+  my_state_model = DiffusionStateModel(f_filt, MvNormal(μ,Σ))
+  my_obs_model   = UserDefinedDiscreteObservationModel(h_filt)
   my_filt_prob   = FilteringProblem(my_state_model, my_obs_model, 2, 1, 10, 10)
 
   filt_parameters = @with_kw (
@@ -323,10 +369,10 @@ for ns in 1:Ns
   )
   my_filt_params_continuous = FilteringParameters(filt_parameters())
 
-  # Bootstrap particle filter
+  # Bootstrap particle filter Np=256
   res_method = "Stratified"
   α = 1.0
-  Nₚ = 1024
+  Nₚ = 128
   my_filt_algo = FilteringAlgorithm(BPF, (Nₚ, res_method, α))
   myfilter = Filter(my_filt_prob, my_filt_algo, my_filt_params_continuous, inputs, tᵧvec, dY)
   output_bpf = run!(myfilter)
@@ -338,24 +384,44 @@ for ns in 1:Ns
   # Computing running times (s/Iter)
   runtimes[ns, 5] = output_bpf[4]["clocktime"]/(Nₜ-1)
 
+
+  # Bootstrap particle filter Np=1024
+  res_method = "Stratified"
+  Nₚ = 1024
+  my_filt_algo = FilteringAlgorithm(BPF, (Nₚ, res_method, α))
+  myfilter = Filter(my_filt_prob, my_filt_algo, my_filt_params_continuous, inputs, tᵧvec, dY)
+  output_bpf = run!(myfilter)
+  mm_bpf = copy(output_bpf[1])'
+
+  RMSE[ns][6, :] = (sqrt.(sum((mm_bpf-x).^2,dims=1))[:])
+  ITAE[ns][6, :] = cumsum(δt*[0.0; tᵧvec].*(sqrt.(sum((mm_bpf-x).^2,dims=1))[:]))
+
+  # Computing running times (s/Iter)
+  runtimes[ns, 6] = output_bpf[4]["clocktime"]/(Nₜ-1)
+
   # Extended Kalman Filter (EKF)
 
   myfilter = Filter(my_filt_prob, FilteringAlgorithm(SREKF), my_filt_params_continuous, inputs, tᵧvec, z)
   output_srekf = run!(myfilter)
   mm_srekf = copy(output_srekf[1])'
 
-  RMSE[ns][6, :] = (sqrt.(sum((mm_srekf-x).^2,dims=1))[:])
-  ITAE[ns][6, :] = cumsum(δt*[0.0; tᵧvec].*(sqrt.(sum((mm_srekf-x).^2,dims=1))[:]))
+  RMSE[ns][7, :] = (sqrt.(sum((mm_srekf-x).^2,dims=1))[:])
+  ITAE[ns][7, :] = cumsum(δt*[0.0; tᵧvec].*(sqrt.(sum((mm_srekf-x).^2,dims=1))[:]))
 
   # Computing running times (s/Iter)
-  runtimes[ns, 6] = output_srekf[4]["clocktime"]/(Nₜ-1)
+  runtimes[ns, 7] = output_srekf[4]["clocktime"]/(Nₜ-1)
 
+
+  jldsave("./res/20runs_Monod_run$(ns).jld2"; RMSE = RMSE[ns], ITAE=ITAE[ns], runtimes=runtimes[ns,:])
 end
+jldsave("./res/20runs_Monod.jld2"; RMSE = RMSE, ITAE=ITAE, runtimes=runtimes)
 #=
+using Plots
 Plots.plot([0.0;tᵧvec], ITAE[1][1, :], label = "lᵢ=32", xlabel = "Time (h)", ylabel = "RMSE")
 Plots.plot!([0.0;tᵧvec], ITAE[1][2, :], label = "lᵢ=128", xlabel = "Time (h)", ylabel = "RMSE")
-Plots.plot!([0.0;tᵧvec], ITAE[1][3, :], label = "BPF", xlabel = "Time (h)", ylabel = "RMSE")
-Plots.plot!([0.0;tᵧvec], ITAE[1][5, :], label = "EnKF", xlabel = "Time (h)", ylabel = "RMSE")
+Plots.plot!([0.0;tᵧvec], ITAE[1][5, :], label = "BPF 128", xlabel = "Time (h)", ylabel = "RMSE")
+Plots.plot!([0.0;tᵧvec], ITAE[1][6, :], label = "BPF 1024", xlabel = "Time (h)", ylabel = "RMSE")
+Plots.plot!([0.0;tᵧvec], ITAE[1][7, :], label = "EnKF", xlabel = "Time (h)", ylabel = "RMSE")
 =#
 
 #=

@@ -2,20 +2,38 @@ import Pkg
 Pkg.activate(".")
 
 # LIBRARIES ______________________________
-using  Random, LinearAlgebra, DifferentialEquations
+using  Random, LinearAlgebra, DifferentialEquations, JLD2
 #, using Plots, DifferentialEquations, Distributions,
 using BayesianFilteringLab
 
 Random.seed!(1234)
 
-# EXPERIMENT _____________________________________________________
+# ============================================================================= 
+# Experiment setup 
+# ============================================================================= 
 
-## DYNAMICS
+# ----------------------------------------------------------------------------- 
+# Dynamical system 
+# -----------------------------------------------------------------------------
 
-## WRITE A FUNCTION THAT,
-## given u(t), p(t)=p, w(t) or (wdB)
-## returns a Differential Equation system, with its independent variables 
-## being the Initial value of the states x₀ and the time span for which it needs to be solved.  
+"""
+Construct the dynamical system:
+
+The function defines the system dynamics for a given control input `u(t)`,
+parameter vector `p`, and process noise `w(t)` (or its stochastic differential
+form `w dB`).
+
+Inputs:
+- `x₀`: initial state vector;
+- `tspan`: time interval over which the system is integrated;
+- `u(t)`: control input;
+- `p`: model parameters;
+- `w(t)` (or `w dB`): process noise.
+
+Returns:
+- A `DifferentialEquations.jl` problem (or equivalent) representing the system
+  dynamics, ready to be solved with DifferentialEquations.jl.
+"""
 
 function f(t; kwargs...)
 
@@ -51,18 +69,33 @@ function f(t; kwargs...)
   
 end
   
-## AUXILIARY
+# Growth kinetics
 function mu_f(s, μ_max, Kₛ, Iₛ)
     s==0 ? 0 : μ_max * s / (Kₛ + s + Iₛ*s*s)
 end
 
-#########################################################################
-## OBSERVATION
+# ----------------------------------------------------------------------------- 
+# Observation system 
+# -----------------------------------------------------------------------------
 
-## WRITE A FUNCTION THAT,
-## given u(t), p(t), w(t) or (wdB)
-## returns an observation y_k with its independent variable 
-## being the vector of states for the specified time t_k  
+"""
+Construct the observation model for the dynamical system.
+
+The function should define the observation equation for a given control input
+`u(t)`, parameter vector `p(t)`, and measurement noise `w(t)`.
+
+The returned function computes the observation `yₖ` at a specified time `tₖ`
+from the corresponding state vector `x(tₖ)`.
+
+Inputs:
+- `x(tₖ)`: state vector at time `tₖ`;
+- `u(tₖ)`: control input at time `tₖ`;
+- `p(tₖ)`: model parameters;
+- `w(tₖ)`: measurement noise.
+
+Returns:
+- `yₖ`: observation vector at time `tₖ`.
+"""
 
 function h(t; kwargs...)
     
@@ -114,7 +147,7 @@ pᵧ = (V = 100., μ_max = 0.3, k_s = 10.0, K = 0.0, γ = 27.5)
 
 #Noise intensities
 wₓ = (σ₁ = 0.0, σ₂ = 0.0)
-wᵧ = (σ₁ = 0.0075, σ₂ = 0.0075, σ₃ = 0.0075)
+wᵧ = (σ₁ = 0.01, σ₂ = 0.01, σ₃ = 0.01)
 
 # More parameters
 function flow(t) 1. end
@@ -135,11 +168,15 @@ T = 500 # (hours)
 δᵧ = 0.01
 
 sim = SimulationMeta(f, h, 2, 3, inputs, (δᵤ, δₓ, δᵧ), μlist, Σ, T, size(μlist, 1))
-output = BayesianFilteringLab.run(sim);
+output = BayesianFilteringLab.run(sim)
+x_dict, y_dict = output[1], output[2]
 
-using JLD2
-jldsave("./simulations/data/1A-continuous/500h_001h_ODE_7runs.jld2", x_dict=output[1], y_dict=output[2])
-#x_dict, y_dict = load("./simulations/data/1A-continuous/500h_001h_ODE_7runs.jld2")
+# Saving data
+#jldsave("./simulations/data/1A-continuous/500h_001h_ODE_7runs.jld2", x_dict=output[1], y_dict=output[2])
+
+# Loading existing data
+#output = load("./simulations/data/1A-continuous/500h_001h_ODE_7runs.jld2")
+#x_dict, y_dict = output["x_dict"], output["y_dict"]
 
 ####################################
 ########## MONOD SDE ###############
@@ -154,11 +191,16 @@ function inputs(t)
   return  Dict(:η => η, :p => p, :w => w)
 end
 sim = SimulationMeta(f, h, 2, 3, inputs, (δᵤ, δₓ, δᵧ), μlist, Σ, T, size(μlist, 1))
-output = BayesianFilteringLab.run(sim);
+output = BayesianFilteringLab.run(sim)
+x_dict, y_dict = output[1], output[2]
 
-using JLD2
-jldsave("./simulations/data/1A-continuous/500h_001h_SDE_7runs.jld2", x_dict=output[1], y_dict=output[2])
+# Saving data
+#jldsave("./simulations/data/1A-continuous/500h_001h_SDE_7runs.jld2", x_dict=output[1], y_dict=output[2])
 #x_dict, y_dict = load("./simulations/data/1A-continuous/500h_001h_SDE_7runs.jld2")
+
+# Loading existing data
+#output = load("./simulations/data/1A-continuous/500h_001h_SDE_7runs.jld2")
+#x_dict, y_dict = output["x_dict"], output["y_dict"]
 
 ####################################
 ########## HALDANE #################
@@ -203,8 +245,15 @@ T = 25
 
 sim = SimulationMeta(f, h, 2, 3, inputs, (δᵤ, δₓ, δᵧ), μlist, Σ, T, size(μlist, 1))
 output = BayesianFilteringLab.run(sim)
-jldsave(rootpath .* "/simulations/data/2A-continuous/25h_0005h_ODE_10runs.jld2", x_dict=output[1], y_dict=output[2])
-#x_dict, y_dict = load(rootpath .* "/simulations/data/2A-continuous/25h_0005h_ODE_10runs.jld2")
+x_dict, y_dict = output[1], output[2]
+
+# Saving data
+#jldsave(rootpath .* "/simulations/data/2A-continuous/25h_0005h_ODE_10runs.jld2", x_dict=output[1], y_dict=output[2])
+
+# Loading existing data
+#output = load("./simulations/data/2A-continuous/25h_0005h_ODE_10runs.jld2")
+#x_dict, y_dict = output["x_dict"], output["y_dict"]
+
 
 ####################################
 ########## HALDANE SDE #############
@@ -219,6 +268,12 @@ function inputs(t)
   return  Dict(:η => η, :p => p, :w => w)
 end
 sim = SimulationMeta(f, h, 2, 3, inputs, (δᵤ, δₓ, δᵧ), μlist, Σ, T, size(μlist, 1))
-output = BayesianFilteringLab.run(sim);
-jldsave(rootpath .* "/simulations/data/2A-continuous/25h_0005h_SDE_10runs.jld2", x_dict=output[1], y_dict=output[2])
-#x_dict, y_dict = load(rootpath .* "/simulations/data/2A-continuous/25h_0005h_SDE_10runs.jld2")
+output = BayesianFilteringLab.run(sim)
+x_dict, y_dict = output[1], output[2]
+
+# Saving data
+#jldsave(rootpath .* "/simulations/data/2A-continuous/25h_0005h_SDE_10runs.jld2", x_dict=output[1], y_dict=output[2])
+
+# Loading existing data
+#output = load("./simulations/data/2A-continuous/25h_0005h_SDE_10runs.jld2")
+#x_dict, y_dict = output["x_dict"], output["y_dict"]
