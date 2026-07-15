@@ -1,0 +1,6 @@
+# JLD2 files
+*.jld2
+
+# OS generated files
+.DS_Store
+
